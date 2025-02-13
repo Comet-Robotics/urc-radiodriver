@@ -1,12 +1,12 @@
 
 #include "Arduino.h"
 #include <RadioLib.h>
-
 // SX1278 has the following connections:
 SX1278 radio = new Module(8, 6, 7, 3);
 
 // flag to indicate that a packet was received
 volatile bool rx_flag = false;
+volatile bool txing = false;
 
 // this function is called when a complete packet
 // is received by the module
@@ -17,23 +17,10 @@ ICACHE_RAM_ATTR
 #endif
 void packetHandler(void)
 {
-    rx_flag = true;
-    // Serial.println("[DEBUG] Handler called");
-    // if (busy)
-    // {
-    //     return;
-    // }
-
-    // uint8_t outBuf[64];
-    // int state = radio.readData(outBuf, 64);
-    // if (state == RADIOLIB_ERR_CRC_MISMATCH)
-    // {
-    //     Serial.println("[DEBUG] Received malformed packet");
-    //     return;
-    // }
-    // Serial.print("[PACKET RX]");
-    // Serial.write(outBuf, 64);
-    // Serial.print('\n');
+    if (!txing)
+    {
+        rx_flag = true;
+    }
 }
 
 void setup()
@@ -42,7 +29,16 @@ void setup()
 
     // initialize SX1278 with default settings
     Serial.print(F("[DEBUG] Initializing ... "));
-    int state = radio.beginFSK();
+    // Only seems to actually work when using the full constructor
+    int state = radio.beginFSK(
+        435,    // Frequency
+        4.8,    // Bit Rate
+        5,      // Frequency Deviation
+        125,    // RX Bandwidth
+        15,     // TX Power
+        16U,    // Preamble length
+        false); // Use OOK instead of FSK
+
     if (state == RADIOLIB_ERR_NONE)
     {
         Serial.println(F("success!"));
@@ -59,17 +55,17 @@ void setup()
 
     // Configure settings
     state = radio.setFrequency(435);
-    // Legal limit, 56 kbaud and 100 kHz bandwidth
     state |= radio.setBitRate(1);
-    state |= radio.setFrequencyDeviation(0.2);
-    state |= radio.setRxBandwidth(250.0);
+    state |= radio.setFrequencyDeviation(1);
+    state |= radio.setRxBandwidth(25);
     state |= radio.setCurrentLimit(100);
-    state |= radio.setGain(0);
-    state |= radio.setOutputPower(15);
-    state |= radio.setDataShaping(RADIOLIB_SHAPING_0_5);
+    state |= radio.setCrcFiltering(false);
+    state |= radio.setOutputPower(2);
+    // state |= radio.setDataShaping(RADIOLIB_SHAPING_0_5);
+    // state |= radio.variablePacketLengthMode(5);
     uint8_t syncWord[] = {0x01, 0x23, 0x45, 0x67,
                           0x89, 0xAB, 0xCD, 0xEF};
-    state = radio.setSyncWord(syncWord, 8);
+    state |= radio.setSyncWord(syncWord, 8);
     if (state != RADIOLIB_ERR_NONE)
     {
         Serial.print(F("[DEBUG] Unable to set configuration, code "));
@@ -80,13 +76,11 @@ void setup()
         }
     }
 
-    // set the function that will be called
-    // when new packet is received
-    radio.setPacketReceivedAction(packetHandler);
-
     // start listening
+    radio.setPacketReceivedAction(packetHandler);
     Serial.print(F("[DEBUG] Starting to listen ... "));
     state = radio.packetMode();
+    // state |= radio.disableAddressFiltering();
     state |= radio.startReceive();
     if (state == RADIOLIB_ERR_NONE)
     {
@@ -105,43 +99,45 @@ void setup()
 
 uint8_t serialInBuf[64];
 size_t serialInBufLen = 0;
+uint8_t outBuf[64];
 
 void loop()
 {
-
-    if (Serial.available())
-    {
-        // Transmit every 64 bytes, or on a newline char
-        int sIn = Serial.read();
-        if (sIn != -1)
-        {
-            serialInBuf[serialInBufLen++] = sIn;
-            Serial.print((char)sIn);
-            if (serialInBufLen == 64 || (char)sIn == '\n')
-            {
-                int state = radio.transmit(serialInBuf, serialInBufLen);
-                Serial.print("[DEBUG] Sent Packet, state ");
-                Serial.print(state);
-                Serial.print('\n');
-                serialInBufLen = 0;
-                radio.startReceive();
-            }
-        }
-    }
     if (rx_flag)
     {
         Serial.println("[DEBUG] Handler called");
-        uint8_t outBuf[64];
-        int state = radio.readData(outBuf, 64);
-        if (state == RADIOLIB_ERR_CRC_MISMATCH)
+        int state = radio.readData(outBuf, 63);
+        if (state != RADIOLIB_ERR_NONE)
         {
-            Serial.println("[DEBUG] Received malformed packet");
-            
-        } else{
+            Serial.print("[DEBUG] RX ERROR, state: ");
+            Serial.print(state);
+            Serial.print('\n');
+        }
+        else
+        {
             Serial.print("[PACKET RX]");
-            Serial.write(outBuf, 64);
+            Serial.write(outBuf, 63);
             Serial.print('\n');
         }
         rx_flag = false;
+    }
+
+    // Transmit every 64 bytes, or on a newline char
+    int sIn = Serial.read();
+    if (sIn != -1)
+    {
+        serialInBuf[serialInBufLen++] = sIn;
+        // /Serial.print((char)sIn);
+        if (serialInBufLen == 63 || (char)sIn == '\n')
+        {
+            txing = true;
+            int state = radio.transmit(serialInBuf, serialInBufLen);
+            Serial.print("[DEBUG] Sent Packet, state ");
+            Serial.print(state);
+            Serial.print('\n');
+            serialInBufLen = 0;
+            txing = false;
+            radio.startReceive();
+        }
     }
 }
