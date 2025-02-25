@@ -1,5 +1,6 @@
 #include "Arduino.h"
 #include <RadioLib.h>
+
 // SX1278 has the following connections:
 SX1278 radio = new Module(8, 6, 7, 3);
 
@@ -23,6 +24,16 @@ uint8_t rxMessageBuf[MAX_MESSAGE_SIZE];
 uint8_t rxPacketTracker[16]; // Bitmap to track received packets
 uint8_t currentMessageTotalPackets = 0;
 uint8_t receivedPacketsCount = 0;
+
+
+
+const uint8_t FEND = 0xC0;
+const uint8_t FESC = 0xDB;
+const uint8_t TFEND = 0xDC;
+const uint8_t TFESC = 0xDD;
+const uint8_t COMMAND = 0x00;
+
+
 
 void resetRxBuffers() {
     memset(rxPacketTracker, 0, sizeof(rxPacketTracker));
@@ -54,9 +65,9 @@ void setup()
     // Only seems to actually work when using the full constructor
     int state = radio.beginFSK(
         435,    // Frequency
-        4.8,    // Bit Rate
-        5,      // Frequency Deviation
-        125,    // RX Bandwidth
+        56,    // Bit Rate
+        44,      // Frequency Deviation
+        166.7,    // RX Bandwidth
         15,     // TX Power
         16U,    // Preamble length
         false); // Use OOK instead of FSK
@@ -76,27 +87,25 @@ void setup()
     }
 
     // Configure settings
-    state = radio.setFrequency(435);
-    state |= radio.setBitRate(1);
-    state |= radio.setFrequencyDeviation(1);
-    state |= radio.setRxBandwidth(25);
-    state |= radio.setCurrentLimit(100);
-    state |= radio.setCrcFiltering(false);
-    state |= radio.setOutputPower(2);
-    // state |= radio.setDataShaping(RADIOLIB_SHAPING_0_5);
-    // state |= radio.variablePacketLengthMode(5);
-    uint8_t syncWord[] = {0x01, 0x23, 0x45, 0x67,
-                          0x89, 0xAB, 0xCD, 0xEF};
-    state |= radio.setSyncWord(syncWord, 8);
-    if (state != RADIOLIB_ERR_NONE)
-    {
-        Serial.print(F("[DEBUG] Unable to set configuration, code "));
-        Serial.println(state);
-        while (true)
-        {
-            delay(10);
-        }
-    }
+    // state = radio.setFrequency(435);
+    // state |= radio.setBitRate(1);
+    // state |= radio.setFrequencyDeviation(1);
+    // state |= radio.setRxBandwidth(25);
+    // state |= radio.setCurrentLimit(100);
+    // state |= radio.setCrcFiltering(false);
+    // state |= radio.setOutputPower(2);
+    // uint8_t syncWord[] = {0x01, 0x23, 0x45, 0x67,
+    //                       0x89, 0xAB, 0xCD, 0xEF};
+    // state |= radio.setSyncWord(syncWord, 8);
+    // if (state != RADIOLIB_ERR_NONE)
+    // {
+    //     Serial.print(F("[DEBUG] Unable to set configuration, code "));
+    //     Serial.println(state);
+    //     while (true)
+    //     {
+    //         delay(10);
+    //     }
+    // }
 
     // start listening
     radio.setPacketReceivedAction(packetHandler);
@@ -153,7 +162,6 @@ void handleReceivedPacket(uint8_t* data, size_t len) {
     uint8_t seq = data[0];
     uint8_t totalPackets = data[1];
     uint8_t packetSize = data[2];
-    
 
 
     // If this is the first packet of a new message or we need to restart
@@ -179,6 +187,22 @@ void handleReceivedPacket(uint8_t* data, size_t len) {
         if (receivedPacketsCount == totalPackets) {
             // Message complete
             size_t totalLen = (totalPackets - 1) * MAX_PAYLOAD_SIZE + packetSize;
+            Serial.write(FEND);
+            Serial.write(COMMAND);
+            for (int i = 0; i < totalLen; i++){
+                uint8_t current_byte = rxMessageBuf[i];
+                switch (current_byte){
+                    case FEND:
+                        Serial.write(FESC);
+                        Serial.write(TFEND);
+                        break;
+                    case FESC:
+                        Serial.write(FESC);
+                        Serial.write(TFESC);
+                    default:
+                        Serial.write(current_byte);
+                }
+            }
             Serial.print(F("[PACKET RX]"));
             Serial.write(rxMessageBuf, totalLen);
             Serial.print('\n');
@@ -186,6 +210,11 @@ void handleReceivedPacket(uint8_t* data, size_t len) {
         }
     }
 }
+
+bool FESCread = false;
+bool FENDread = false;
+bool C0read = false;
+bool reading_packet = false;
 
 void loop()
 {
@@ -202,12 +231,71 @@ void loop()
     int sIn = Serial.read();
     if (sIn != -1)
     {
-        serialInBuf[serialInBufLen++] = sIn;
-        
-        if (serialInBufLen >= MAX_MESSAGE_SIZE || (char)sIn == '\n')
+
+
+        // KISS Framing
+        // https://en.wikipedia.org/wiki/KISS_(amateur_radio_protocol)
+        switch (sIn){
+            case FEND:
+                if(!reading_packet){
+                    FENDread = true;
+                }else{
+                    reading_packet = false;
+                    FENDread = false;
+                    sendPackets(serialInBuf, serialInBufLen);
+                    serialInBufLen = 0;
+                }
+                break;
+            case COMMAND:
+                if(FENDread){
+                    FENDread = false;
+                    reading_packet = true;
+                    serialInBufLen = 0;
+                }
+                break;
+            case FESC:
+                FESCread = true;
+                break;
+            case TFEND:
+                if (FESCread){
+                    FESCread = false;
+                    // write FEND
+                    serialInBuf[serialInBufLen++] = FEND;
+                } else{
+                    //write tfend
+                    serialInBuf[serialInBufLen++] = TFEND;
+                }
+                break;
+            case TFESC:
+                if (FESCread){
+                    FESCread = false;
+                    // write FESC
+                    serialInBuf[serialInBufLen++] = FESC;
+                } else{
+                    //write tfesc
+                    serialInBuf[serialInBufLen++] = TFESC;
+                }
+                break;
+            default:
+                if (FESCread){
+                    FESCread = false; // THIS SHOULD NOT HAPPEN
+                }
+                if(reading_packet){
+                    serialInBuf[serialInBufLen++] = sIn;
+                }
+                FENDread = false; // THIS SHOULD NOT MATTER
+        }
+
+        // Serial message is base64 encoded, so there is some overhead
+        if (serialInBufLen > MAX_MESSAGE_SIZE)
         {
-            sendPackets(serialInBuf, serialInBufLen);
+            //Packet was too long or a terrible error happened, start over
             serialInBufLen = 0;
+            bool FESCread = false;
+            bool FENDread = false;
+            bool C0read = false;
+            bool reading_packet = false;
+
         }
     }
 }
