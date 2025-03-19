@@ -61,7 +61,9 @@ void setup()
     Serial.begin(115200);
 
     // initialize SX1278 with default settings
+    #ifdef DEBUG
     Serial.print(F("[DEBUG] Initializing ... "));
+    #endif
     // Only seems to actually work when using the full constructor
     int state = radio.beginFSK(
         435,    // Frequency
@@ -72,6 +74,25 @@ void setup()
         16U,    // Preamble length
         false); // Use OOK instead of FSK
 
+    if (state == RADIOLIB_ERR_NONE)
+    {   
+        #ifdef DEBUG
+        Serial.println(F("success!"));
+        #endif
+    }
+    else
+    {
+        Serial.print(F("failed, code "));
+        Serial.println(state);
+        while (true)
+        {
+            delay(10);
+        }
+    }
+
+
+    uint8_t syncWord[] = "K5UTD"; // This gets us the call sign in every packet
+    state = radio.setSyncWord(syncWord, 8);
     if (state == RADIOLIB_ERR_NONE)
     {
         Serial.println(F("success!"));
@@ -86,29 +107,12 @@ void setup()
         }
     }
 
-    // Configure settings
-    // state = radio.setFrequency(435);
-    // state |= radio.setBitRate(1);
-    // state |= radio.setFrequencyDeviation(1);
-    // state |= radio.setRxBandwidth(25);
-    // state |= radio.setCurrentLimit(100);
-    // state |= radio.setCrcFiltering(false);
-    // state |= radio.setOutputPower(2);
-    // uint8_t syncWord[] = {0x01, 0x23, 0x45, 0x67,
-    //                       0x89, 0xAB, 0xCD, 0xEF};
-    // state |= radio.setSyncWord(syncWord, 8);
-    // if (state != RADIOLIB_ERR_NONE)
-    // {
-    //     Serial.print(F("[DEBUG] Unable to set configuration, code "));
-    //     Serial.println(state);
-    //     while (true)
-    //     {
-    //         delay(10);
-    //     }
-    // }
+
 
     // start listening
     radio.setPacketReceivedAction(packetHandler);
+    
+
     Serial.print(F("[DEBUG] Starting to listen ... "));
     state = radio.packetMode();
     // state |= radio.disableAddressFiltering();
@@ -145,12 +149,13 @@ void sendPackets(uint8_t* data, size_t len) {
         
         txing = true;
         int state = radio.transmit(packet, payloadSize + PACKET_OVERHEAD);
+        #ifdef DEBUG
         Serial.print(F("[DEBUG] Sent Packet "));
         Serial.print(seq + 1);
         Serial.print(F("/"));
         Serial.println(totalPackets);
+        #endif
         
-        delay(10); 
     }
     txing = false;
     radio.startReceive();
@@ -166,14 +171,18 @@ void handleReceivedPacket(uint8_t* data, size_t len) {
 
     // If this is the first packet of a new message or we need to restart
     if (currentMessageTotalPackets == 0 || totalPackets != currentMessageTotalPackets) {
+        #ifdef DEBUG
         Serial.println(F("[DEBUG] Starting new message"));
+        #endif
         resetRxBuffers();
         currentMessageTotalPackets = totalPackets;
     }
+    #ifdef DEBUG
     Serial.print(F("[DEBUG] Received Packet "));
     Serial.print(seq + 1);
     Serial.print(F("/"));
     Serial.println(totalPackets);
+    #endif
     if (!(rxPacketTracker[seq/8] & (1 << (seq%8)))) {
         // New packet
         memcpy(rxMessageBuf + (seq * MAX_PAYLOAD_SIZE), 
@@ -203,9 +212,7 @@ void handleReceivedPacket(uint8_t* data, size_t len) {
                         Serial.write(current_byte);
                 }
             }
-            Serial.print(F("[PACKET RX]"));
-            Serial.write(rxMessageBuf, totalLen);
-            Serial.print('\n');
+            Serial.write(FEND);
             resetRxBuffers();
         }
     }
@@ -286,10 +293,10 @@ void loop()
                 FENDread = false; // THIS SHOULD NOT MATTER
         }
 
-        // Serial message is base64 encoded, so there is some overhead
+        
+        // If message was too long or a terrible error happened, start over
         if (serialInBufLen > MAX_MESSAGE_SIZE)
         {
-            //Packet was too long or a terrible error happened, start over
             serialInBufLen = 0;
             bool FESCread = false;
             bool FENDread = false;
